@@ -1,8 +1,8 @@
 error: Named capture group `middle` has no corresponding field in the struct.
- --> tests/ui/missing_named_capture_field.rs:7:9
+ --> tests/ui/missing_named_capture_field.rs:4:13
   |
-7 |         matched: &'a str,
-  |         ^^^^^^^^^^^^^^^^^
+4 |     #[regex(r"^(?<middle>.)\. Simpson$")]
+  |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 error[E0433]: failed to resolve: use of undeclared type `HomerSimpson`
   --> tests/ui/missing_named_capture_field.rs:10:13
