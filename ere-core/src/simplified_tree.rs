@@ -240,13 +240,16 @@ impl SimplifiedTreeNode {
     ) -> (SimplifiedTreeNode, usize) {
         return match value {
             EREExpression::Atom(atom) => (atom.clone().into(), group_num),
-            EREExpression::Subexpression(ere) => {
+            EREExpression::Subexpression(ere) | EREExpression::NamedSubexpression(ere, _) => {
                 let (capture, next_group_num) =
                     SimplifiedTreeNode::from_sub_ere(ere, group_num + 1, config);
                 (
                     SimplifiedTreeNode::Capture(capture.into(), group_num),
                     next_group_num,
                 )
+            }
+            EREExpression::NonCapturingSubexpression(ere) => {
+                SimplifiedTreeNode::from_sub_ere(ere, group_num, config)
             }
         };
     }

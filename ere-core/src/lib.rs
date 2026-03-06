@@ -32,6 +32,14 @@ impl<const N: usize> Regex<N> {
     pub fn test(&self, text: &str) -> bool {
         return (self.test_fn)(text);
     }
+    /// Executes the regular expression against `text` and returns the captures if it matches.
+    ///
+    /// The returned array has `N` elements: index `0` is the entire match, and indices `1..N`
+    /// are the individual capture groups in the order they appear in the pattern.
+    /// Each element is `Some(&str)` when the group participated in the match and `None` when it
+    /// did not (for example, an optional group that was not taken).
+    ///
+    /// Returns `None` when the regular expression does not match `text`.
     #[inline]
     pub fn exec<'a>(&self, text: &'a str) -> Option<[Option<&'a str>; N]> {
         return (self.exec_fn)(text);
@@ -269,9 +277,8 @@ pub fn __compile_regex_attr(attr: TokenStream, input: TokenStream) -> TokenStrea
         .map(|group_num| nfa.capture_group_is_optional(group_num))
         .collect();
 
-    let input_copy = input.clone();
-    let regex_struct: syn::DeriveInput = syn::parse_macro_input!(input_copy);
-    let syn::Data::Struct(data_struct) = regex_struct.data else {
+    let mut regex_struct: syn::DeriveInput = syn::parse_macro_input!(input);
+    let syn::Data::Struct(ref mut data_struct) = regex_struct.data else {
         return syn::parse::Error::new_spanned(
             regex_struct,
             "Attribute regexes currently only support structs.",
@@ -279,34 +286,6 @@ pub fn __compile_regex_attr(attr: TokenStream, input: TokenStream) -> TokenStrea
         .to_compile_error()
         .into();
     };
-    let syn::Fields::Unnamed(fields) = data_struct.fields else {
-        return syn::parse::Error::new_spanned(
-            data_struct.fields,
-            "Attribute regexes currently require unnamed structs (tuple syntax).",
-        )
-        .to_compile_error()
-        .into();
-    };
-    if fields.unnamed.len() != optional_captures.len() {
-        return syn::parse::Error::new_spanned(
-            fields.unnamed,
-            format!(
-                "Expected struct to have {} unnamed fields, based on number of captures in regular expression.",
-                optional_captures.len()
-            ),
-        )
-        .to_compile_error()
-        .into();
-    }
-    // for field in &fields.unnamed {
-    //     if let syn::Type::Reference(ty) = &field.ty {
-    //         if matches!(*ty.elem, syn::parse_quote!(str)) {
-    //             continue;
-    //         }
-    //     }
-    // }
-
-    let mut out: proc_macro2::TokenStream = input.into();
 
     // Currently use a conservative check: only use u8 engines when it will only match ascii strings
     fn is_state_ascii(state: &working_nfa::WorkingState) -> bool {
@@ -316,29 +295,130 @@ pub fn __compile_regex_attr(attr: TokenStream, input: TokenStream) -> TokenStrea
             .flat_map(|t| t.symbol.to_ranges())
             .all(|range| range.end().is_ascii());
     }
-    let is_ascii = nfa.states.iter().all(is_state_ascii);
+    let _is_ascii = nfa.states.iter().all(is_state_ascii);
 
-    let struct_args: proc_macro2::TokenStream = optional_captures
-        .iter()
-        .enumerate()
-        .map(|(group_num, opt)| if *opt {
-            quote! { result[#group_num], }
-        } else {
-            quote! {
-                result[#group_num]
-                .expect(
-                    "If you are seeing this, there is probably an internal bug in the `ere-core` crate where a capture group was mistakenly marked as non-optional. Please report the bug."
-                ),
-            }
-        })
-        .collect();
-
-    // TODO: is it possible to more naturally extract struct args as optional or not?
-    let (fn_pair, description) = pick_engine(ere);
-    let struct_name = regex_struct.ident;
-
+    let (fn_pair, description) = pick_engine(ere.clone());
+    let struct_name = regex_struct.ident.clone();
     let ere_display_doc = format!("`{ere_str}`");
     let struct_name_link_doc = format!("[`{}`]", struct_name.to_string());
+
+    let constructor = match &mut data_struct.fields {
+        syn::Fields::Unnamed(fields) => {
+            if fields.unnamed.len() != optional_captures.len() {
+                return syn::parse::Error::new_spanned(
+                    &fields.unnamed,
+                    format!(
+                        "Expected struct to have {} unnamed fields, based on number of captures in regular expression.",
+                        optional_captures.len()
+                    ),
+                )
+                .to_compile_error()
+                .into();
+            }
+            let args: proc_macro2::TokenStream = optional_captures
+                .iter()
+                .enumerate()
+                .map(|(group_num, opt)| if *opt {
+                    quote! { result[#group_num], }
+                } else {
+                    quote! {
+                        result[#group_num]
+                        .expect(
+                            "If you are seeing this, there is probably an internal bug in the `ere-core` crate where a capture group was mistakenly marked as non-optional. Please report the bug."
+                        ),
+                    }
+                })
+                .collect();
+            quote! { #struct_name(#args) }
+        }
+        syn::Fields::Named(ref mut fields) => {
+            let group_names = ere.group_names();
+            let name_to_group: std::collections::HashMap<String, usize> = group_names
+                .iter()
+                .enumerate()
+                .filter_map(|(i, name)| name.as_ref().map(|n| (n.clone(), i + 1)))
+                .collect();
+
+            let mut field_args = Vec::new();
+            let mut used_named_groups = std::collections::HashSet::new();
+            for field in fields.named.iter_mut() {
+                let ident = field.ident.as_ref().unwrap();
+
+                // Parse #[group(N)] attribute if present, then strip it
+                let explicit_group: Option<usize> = field.attrs.iter()
+                    .find(|a| a.path().is_ident("group"))
+                    .and_then(|a| a.parse_args::<syn::LitInt>().ok())
+                    .and_then(|lit| lit.base10_parse().ok());
+                field.attrs.retain(|a| !a.path().is_ident("group"));
+
+                let group_num = if let Some(n) = explicit_group {
+                    n
+                } else {
+                    let name = ident.to_string();
+                    match name_to_group.get(&name) {
+                        Some(&n) => {
+                            used_named_groups.insert(n);
+                            n
+                        }
+                        None => {
+                            return syn::parse::Error::new_spanned(
+                                ident,
+                                format!("No capture group named `{name}` found in the regular expression."),
+                            )
+                            .to_compile_error()
+                            .into();
+                        }
+                    }
+                };
+                if group_num >= capture_groups {
+                    return syn::parse::Error::new_spanned(
+                        ident,
+                        format!(
+                            "#[group({group_num})] is out of range: the regular expression only has {} capture group(s) (groups 0..{}).",
+                            capture_groups,
+                            capture_groups,
+                        ),
+                    )
+                    .to_compile_error()
+                    .into();
+                }
+                let opt = optional_captures[group_num];
+                let arg = if opt {
+                    quote! { #ident: result[#group_num], }
+                } else {
+                    quote! {
+                        #ident: result[#group_num]
+                            .expect("If you are seeing this, there is probably an internal bug in the `ere-core` crate where a capture group was mistakenly marked as non-optional. Please report the bug."),
+                    }
+                };
+                field_args.push(arg);
+            }
+
+            // Every named capture group must be bound to a field
+            for (name, &group_num) in &name_to_group {
+                if !used_named_groups.contains(&group_num) {
+                    return syn::parse::Error::new_spanned(
+                        &fields.named,
+                        format!("Named capture group `{name}` has no corresponding field in the struct."),
+                    )
+                    .to_compile_error()
+                    .into();
+                }
+            }
+
+            let args: proc_macro2::TokenStream = field_args.into_iter().collect();
+            quote! { #struct_name { #args } }
+        }
+        syn::Fields::Unit => {
+            return syn::parse::Error::new_spanned(
+                &struct_name,
+                "Attribute regexes require a struct with fields.",
+            )
+            .to_compile_error()
+            .into();
+        }
+    };
+
     let implementation = quote! {
         impl<'a> #struct_name<'a> {
             const ENGINE: (
@@ -367,13 +447,12 @@ pub fn __compile_regex_attr(attr: TokenStream, input: TokenStream) -> TokenStrea
             #[doc = #description]
             pub fn exec(text: &'a str) -> ::core::option::Option<#struct_name<'a>> {
                 let result: [::core::option::Option<&'a str>; #capture_groups] = (Self::ENGINE.1)(text)?;
-                return ::core::option::Option::<#struct_name<'a>>::Some(#struct_name(
-                    #struct_args
-                ));
+                return ::core::option::Option::<#struct_name<'a>>::Some(#constructor);
             }
         }
     };
-    out.extend(implementation);
-
-    return out.into();
+    return quote! {
+        #regex_struct
+        #implementation
+    }.into();
 }

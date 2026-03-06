@@ -200,6 +200,56 @@ pub fn compile_regex_fixed_offset(stream: TokenStream) -> TokenStream {
 /// );
 /// ```
 ///
+/// Named structs use field names that match capture group names, with `#[group(0)]` marking the
+/// whole-match field. Fields can be declared in any order — the macro resolves bindings by name:
+///
+/// ```
+/// use ere_macros::regex;
+///
+/// #[derive(Debug, PartialEq, Eq)]
+/// #[regex(r"^(?<year>[0-9]{4})-(?:0[1-9]|1[0-2])-(?<day>[0-9]{2})$")]
+/// pub struct Date<'a> {
+///     #[group(0)]
+///     pub matched: &'a str,
+///     // day declared before year — order is independent of regex group order
+///     pub day: &'a str,
+///     pub year: &'a str,
+/// }
+///
+/// assert!(Date::test("2024-03-15"));
+/// assert!(!Date::test("2024-13-15"));
+///
+/// assert_eq!(
+///     Date::exec("2024-03-15"),
+///     Some(Date { matched: "2024-03-15", day: "15", year: "2024" }),
+/// );
+/// assert_eq!(Date::exec("2024-13-15"), None);
+/// ```
+///
+/// Optional named groups map to `Option<&'a str>` — `None` when the group did not participate
+/// in the match, `Some(...)` when it did:
+///
+/// ```
+/// use ere_macros::regex;
+///
+/// #[derive(Debug, PartialEq, Eq)]
+/// #[regex(r"^(?<country>\+1 )?[0-9]{3}-[0-9]{3}-[0-9]{4}$")]
+/// pub struct PhoneNumber<'a> {
+///     #[group(0)]
+///     pub matched: &'a str,
+///     pub country: Option<&'a str>,
+/// }
+///
+/// assert_eq!(
+///     PhoneNumber::exec("555-555-5555"),
+///     Some(PhoneNumber { matched: "555-555-5555", country: None }),
+/// );
+/// assert_eq!(
+///     PhoneNumber::exec("+1 555-555-5555"),
+///     Some(PhoneNumber { matched: "+1 555-555-5555", country: Some("+1 ") }),
+/// );
+/// ```
+///
 /// ---
 ///
 /// Note that it is required to specify the fields with the proper type

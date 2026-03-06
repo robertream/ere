@@ -3,6 +3,52 @@
 use ere::regex;
 
 #[test]
+fn non_capturing_group() {
+    #[derive(PartialEq, Eq, Debug)]
+    #[regex(r"^(?:foo)(bar)$")]
+    struct FooBar<'a>(&'a str, &'a str);
+
+    assert!(FooBar::test("foobar"));
+    assert!(!FooBar::test("bar"));
+    assert_eq!(FooBar::exec("foobar"), Some(FooBar("foobar", "bar")));
+    assert_eq!(FooBar::exec("bar"), None);
+}
+
+#[test]
+fn named_capture_group_tuple_struct() {
+    #[derive(PartialEq, Eq, Debug)]
+    #[regex(r"^Homer (?<middle>.)\. Simpson$")]
+    struct HomerSimpson<'a>(&'a str, &'a str);
+
+    assert!(HomerSimpson::test("Homer J. Simpson"));
+    assert!(!HomerSimpson::test("Homer Simpson"));
+    assert_eq!(
+        HomerSimpson::exec("Homer J. Simpson"),
+        Some(HomerSimpson("Homer J. Simpson", "J"))
+    );
+    assert_eq!(HomerSimpson::exec("Homer Simpson"), None);
+}
+
+#[test]
+fn named_field_struct() {
+    #[derive(PartialEq, Eq, Debug)]
+    #[regex(r"^Homer (?<middle>.)\. Simpson$")]
+    struct HomerSimpson<'a> {
+        #[group(0)]
+        matched: &'a str,
+        middle: &'a str,
+    }
+
+    assert!(HomerSimpson::test("Homer J. Simpson"));
+    assert!(!HomerSimpson::test("Homer Simpson"));
+    assert_eq!(
+        HomerSimpson::exec("Homer J. Simpson"),
+        Some(HomerSimpson { matched: "Homer J. Simpson", middle: "J" })
+    );
+    assert_eq!(HomerSimpson::exec("Homer Simpson"), None);
+}
+
+#[test]
 fn phone_number_struct() {
     #[derive(PartialEq, Eq, Debug)]
     #[regex(r"^(\+1 )?[0-9]{3}-[0-9]{3}-[0-9]{4}$")]

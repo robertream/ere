@@ -55,6 +55,8 @@ pub enum RegexParseError {
     /// Should only happen in debug settings, since it happens only when we call `Atom::take("")`
     #[error("An atom was expected but was not found due to the end of the string.")]
     UnexpectedEOF,
+    #[error("A named capture group `(?<name>...)` has a malformed or empty name.")]
+    InvalidGroupName,
 }
 
 /// A represents a [POSIX-compliant ERE](https://pubs.opengroup.org/onlinepubs/9699919799/basedefs/V1_chap09.html).
@@ -92,6 +94,27 @@ impl ERE {
         };
         return Ok(ere);
     }
+    /// Returns the names of capture groups in group-number order (groups 1..N).
+    /// `None` means the group is unnamed. Group 0 (whole match) is not included.
+    /// Mirrors the depth-first pre-order traversal used by the simplified tree builder.
+    pub(crate) fn group_names(&self) -> Vec<Option<String>> {
+        let mut names = Vec::new();
+        self.collect_group_names(&mut names);
+        names
+    }
+    fn collect_group_names(&self, names: &mut Vec<Option<String>>) {
+        for branch in &self.0 {
+            for part in &branch.0 {
+                match part {
+                    EREPart::Single(expr) | EREPart::Quantified(expr, _) => {
+                        expr.collect_group_names(names);
+                    }
+                    EREPart::Start | EREPart::End => {}
+                }
+            }
+        }
+    }
+
     pub(crate) fn parse_str_syn(string: &str, span: proc_macro2::Span) -> syn::Result<Self> {
         return ERE::parse_str(&string).map_err(|err| {
             syn::Error::new(
@@ -170,11 +193,28 @@ impl EREPart {
         }
 
         let (rest, expr) = if let Some(rest) = rest.strip_prefix('(') {
+            let (kind, rest) = if let Some(rest) = rest.strip_prefix("?:") {
+                (None, rest) // non-capturing
+            } else if let Some(rest) = rest.strip_prefix("?<") {
+                let Some((name, rest)) = rest.split_once('>') else {
+                    return Err(RegexParseError::InvalidGroupName);
+                };
+                if name.is_empty() {
+                    return Err(RegexParseError::InvalidGroupName);
+                }
+                (Some(name.to_string()), rest)
+            } else {
+                (Some(String::new()), rest) // capturing, no name
+            };
             let (rest, ere) = ERE::take(rest)?;
             let Some(rest) = rest.strip_prefix(')') else {
                 return Err(RegexParseError::UnterminatedCaptureGroup);
             };
-            (rest, EREExpression::Subexpression(ere))
+            match kind {
+                None => (rest, EREExpression::NonCapturingSubexpression(ere)),
+                Some(name) if name.is_empty() => (rest, EREExpression::Subexpression(ere)),
+                Some(name) => (rest, EREExpression::NamedSubexpression(ere, name)),
+            }
         } else {
             let (rest, atom) = Atom::take(rest)?;
             (rest, EREExpression::Atom(atom))
@@ -202,13 +242,35 @@ impl Display for EREPart {
 pub(crate) enum EREExpression {
     Atom(Atom),
     Subexpression(ERE),
+    NonCapturingSubexpression(ERE),
+    NamedSubexpression(ERE, String),
 }
 impl Display for EREExpression {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         return match self {
             EREExpression::Atom(atom) => write!(f, "{atom}"),
             EREExpression::Subexpression(ere) => write!(f, "({ere})"),
+            EREExpression::NonCapturingSubexpression(ere) => write!(f, "(?:{ere})"),
+            EREExpression::NamedSubexpression(ere, name) => write!(f, "(?<{name}>{ere})"),
         };
+    }
+}
+impl EREExpression {
+    fn collect_group_names(&self, names: &mut Vec<Option<String>>) {
+        match self {
+            EREExpression::Atom(_) => {}
+            EREExpression::Subexpression(inner) => {
+                names.push(None);
+                inner.collect_group_names(names);
+            }
+            EREExpression::NamedSubexpression(inner, name) => {
+                names.push(Some(name.clone()));
+                inner.collect_group_names(names);
+            }
+            EREExpression::NonCapturingSubexpression(inner) => {
+                inner.collect_group_names(names);
+            }
+        }
     }
 }
 
