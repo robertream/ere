@@ -341,6 +341,8 @@ pub fn __compile_regex_attr(attr: TokenStream, input: TokenStream) -> TokenStrea
 
             let mut field_args = Vec::new();
             let mut used_named_groups = std::collections::HashSet::new();
+            let mut used_groups = std::collections::HashSet::new();
+            used_groups.insert(0usize); // group 0 is implicitly always present
             for field in fields.named.iter_mut() {
                 let ident = field.ident.as_ref().unwrap();
 
@@ -382,6 +384,7 @@ pub fn __compile_regex_attr(attr: TokenStream, input: TokenStream) -> TokenStrea
                     .to_compile_error()
                     .into();
                 }
+                used_groups.insert(group_num);
                 let opt = optional_captures[group_num];
                 let arg = if opt {
                     quote! { #ident: result[#group_num], }
@@ -394,12 +397,22 @@ pub fn __compile_regex_attr(attr: TokenStream, input: TokenStream) -> TokenStrea
                 field_args.push(arg);
             }
 
-            // Every named capture group must be bound to a field
-            for (name, &group_num) in &name_to_group {
-                if !used_named_groups.contains(&group_num) {
+            // Every capture group must be bound to a field
+            for group_num in 0..capture_groups {
+                if used_groups.contains(&group_num) {
+                    continue;
+                }
+                if let Some((name, _)) = name_to_group.iter().find(|(_, &g)| g == group_num) {
                     return syn::parse::Error::new_spanned(
-                        &fields.named,
+                        &ere_litstr,
                         format!("Named capture group `{name}` has no corresponding field in the struct."),
+                    )
+                    .to_compile_error()
+                    .into();
+                } else {
+                    return syn::parse::Error::new_spanned(
+                        &ere_litstr,
+                        format!("Capture group {group_num} has no corresponding field in the struct. Add a field like `#[group({group_num})] captured: &'a str`."),
                     )
                     .to_compile_error()
                     .into();
