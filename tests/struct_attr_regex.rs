@@ -49,6 +49,31 @@ fn named_field_struct() {
 }
 
 #[test]
+fn unnamed_groups_not_required_in_named_struct() {
+    // Unnamed capture groups in the regex don't need corresponding fields
+    // in a named struct. Only named capture groups must be bound.
+    #[derive(PartialEq, Eq, Debug)]
+    #[regex(r"^(?<year>[21][0-9]{3})(-|-=)(?<month>0[1-9]|1[0-2])(-|-=)(?<day>[0123][0-9])$")]
+    struct DateMatch<'a> {
+        #[group(0)]
+        matched: &'a str,
+        year: &'a str,
+        month: &'a str,
+        day: &'a str,
+    }
+
+    assert_eq!(
+        DateMatch::exec("2024-03-29"),
+        Some(DateMatch { matched: "2024-03-29", year: "2024", month: "03", day: "29" })
+    );
+    assert_eq!(
+        DateMatch::exec("2024-=03-=29"),
+        Some(DateMatch { matched: "2024-=03-=29", year: "2024", month: "03", day: "29" })
+    );
+    assert_eq!(DateMatch::exec("2024/03/29"), None);
+}
+
+#[test]
 fn phone_number_struct() {
     #[derive(PartialEq, Eq, Debug)]
     #[regex(r"^(\+1 )?[0-9]{3}-[0-9]{3}-[0-9]{4}$")]

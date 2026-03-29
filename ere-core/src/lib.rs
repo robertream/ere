@@ -393,7 +393,8 @@ pub fn __compile_regex_attr(attr: TokenStream, input: TokenStream) -> TokenStrea
                 field_args.push(arg);
             }
 
-            // Every capture group must be bound to a field
+            // Every named capture group must be bound to a field.
+            // Unnamed capture groups may be left unbound (silently ignored).
             for group_num in 0..capture_groups {
                 if used_groups.contains(&group_num) {
                     continue;
@@ -405,14 +406,9 @@ pub fn __compile_regex_attr(attr: TokenStream, input: TokenStream) -> TokenStrea
                     )
                     .to_compile_error()
                     .into();
-                } else {
-                    return syn::parse::Error::new_spanned(
-                        &ere_litstr,
-                        format!("Capture group {group_num} has no corresponding field in the struct. Add a field like `#[group({group_num})] captured: &'a str`."),
-                    )
-                    .to_compile_error()
-                    .into();
                 }
+                // Unnamed capture groups without a corresponding #[group(N)] field
+                // are silently skipped — users are not forced to bind every group.
             }
 
             let args: proc_macro2::TokenStream = field_args.into_iter().collect();
