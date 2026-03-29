@@ -250,6 +250,104 @@ pub fn compile_regex_fixed_offset(stream: TokenStream) -> TokenStream {
 /// );
 /// ```
 ///
+/// By default, all named capture groups must have a corresponding struct field, but unnamed
+/// groups can be left unbound. The `bind` parameter controls this behavior:
+///
+/// - `bind = Strict` — all capture groups (named and unnamed) must have fields
+/// - `bind = Named` — only named groups must have fields (the default)
+/// - `bind = None` — no groups are required; only declared fields are populated
+///
+/// If a required group has no corresponding field, compilation fails with an error
+/// identifying the unbound group.
+///
+/// `bind = Named` (the default) skips unnamed groups you don't care about:
+///
+/// ```
+/// use ere_macros::regex;
+///
+/// #[derive(Debug, PartialEq, Eq)]
+/// // bind = Named is the default, so it can be omitted:
+/// #[regex(r"^(?<year>[0-9]{4})(-|/)(?<month>[0-9]{2})(-|/)(?<day>[0-9]{2})(T| )(?<hour>[0-9]{2})(:)(?<min>[0-9]{2})(:)(?<sec>[0-9]{2})$")]
+/// pub struct Timestamp<'a> {
+///     #[group(0)]
+///     pub matched: &'a str,
+///     pub year: &'a str,
+///     pub month: &'a str,
+///     pub day: &'a str,
+///     pub hour: &'a str,
+///     pub min: &'a str,
+///     pub sec: &'a str,
+///     // Separators like `(-|/)`, `(T| )`, and `(:)` are unnamed and silently ignored.
+/// }
+///
+/// assert_eq!(
+///     Timestamp::exec("2024-03-15T09:30:00"),
+///     Some(Timestamp {
+///         matched: "2024-03-15T09:30:00",
+///         year: "2024", month: "03", day: "15",
+///         hour: "09", min: "30", sec: "00",
+///     }),
+/// );
+/// assert_eq!(
+///     Timestamp::exec("2024/03/15 09:30:00"),
+///     Some(Timestamp {
+///         matched: "2024/03/15 09:30:00",
+///         year: "2024", month: "03", day: "15",
+///         hour: "09", min: "30", sec: "00",
+///     }),
+/// );
+/// ```
+///
+/// `bind = Strict` requires every capture group to have a field — useful when you want
+/// the compiler to catch any group you forgot to bind:
+///
+/// ```
+/// use ere_macros::regex;
+///
+/// #[derive(Debug, PartialEq, Eq)]
+/// #[regex(r"^(?<year>[0-9]{4})(-|/)(?<month>[0-9]{2})(-|/)(?<day>[0-9]{2})$", bind = Strict)]
+/// pub struct StrictDate<'a> {
+///     #[group(0)]
+///     pub matched: &'a str,
+///     pub year: &'a str,
+///     #[group(2)]
+///     pub sep1: &'a str,
+///     pub month: &'a str,
+///     #[group(4)]
+///     pub sep2: &'a str,
+///     pub day: &'a str,
+/// }
+///
+/// assert_eq!(
+///     StrictDate::exec("2024-03-15"),
+///     Some(StrictDate {
+///         matched: "2024-03-15", year: "2024", sep1: "-",
+///         month: "03", sep2: "-", day: "15",
+///     }),
+/// );
+/// ```
+///
+/// `bind = None` allows any group (including named ones) to go unbound — useful when you
+/// only need a few fields from a complex regex:
+///
+/// ```
+/// use ere_macros::regex;
+///
+/// #[derive(Debug, PartialEq, Eq)]
+/// #[regex(r"^(?<year>[0-9]{4})(-|/)(?<month>[0-9]{2})(-|/)(?<day>[0-9]{2})$", bind = None)]
+/// pub struct YearOnly<'a> {
+///     #[group(0)]
+///     pub matched: &'a str,
+///     pub year: &'a str,
+///     // month, day, and separator groups are all silently ignored.
+/// }
+///
+/// assert_eq!(
+///     YearOnly::exec("2024-03-15"),
+///     Some(YearOnly { matched: "2024-03-15", year: "2024" }),
+/// );
+/// ```
+///
 /// ---
 ///
 /// Note that it is required to specify the fields with the proper type
