@@ -340,7 +340,6 @@ pub fn __compile_regex_attr(attr: TokenStream, input: TokenStream) -> TokenStrea
                 .collect();
 
             let mut field_args = Vec::new();
-            let mut used_named_groups = std::collections::HashSet::new();
             let mut used_groups = std::collections::HashSet::new();
             used_groups.insert(0usize); // group 0 is implicitly always present
             for field in fields.named.iter_mut() {
@@ -358,10 +357,7 @@ pub fn __compile_regex_attr(attr: TokenStream, input: TokenStream) -> TokenStrea
                 } else {
                     let name = ident.to_string();
                     match name_to_group.get(&name) {
-                        Some(&n) => {
-                            used_named_groups.insert(n);
-                            n
-                        }
+                        Some(&n) => n,
                         None => {
                             return syn::parse::Error::new_spanned(
                                 ident,

@@ -97,11 +97,13 @@ impl ERE {
     /// Returns the names of capture groups in group-number order (groups 1..N).
     /// `None` means the group is unnamed. Group 0 (whole match) is not included.
     /// Mirrors the depth-first pre-order traversal used by the simplified tree builder.
+    #[cfg(feature = "unstable-attr-regex")]
     pub(crate) fn group_names(&self) -> Vec<Option<String>> {
         let mut names = Vec::new();
         self.collect_group_names(&mut names);
         names
     }
+    #[cfg(feature = "unstable-attr-regex")]
     fn collect_group_names(&self, names: &mut Vec<Option<String>>) {
         for branch in &self.0 {
             for part in &branch.0 {
@@ -256,6 +258,7 @@ impl Display for EREExpression {
     }
 }
 impl EREExpression {
+    #[cfg(feature = "unstable-attr-regex")]
     fn collect_group_names(&self, names: &mut Vec<Option<String>>) {
         match self {
             EREExpression::Atom(_) => {}
