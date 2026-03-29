@@ -17,3 +17,15 @@ fn group_index_out_of_bounds() {
     let t = trybuild::TestCases::new();
     t.compile_fail("tests/ui/group_index_out_of_bounds.rs");
 }
+
+#[test]
+fn bind_strict_missing_unnamed() {
+    let t = trybuild::TestCases::new();
+    t.compile_fail("tests/ui/bind_strict_missing_unnamed.rs");
+}
+
+#[test]
+fn bind_named_missing_named() {
+    let t = trybuild::TestCases::new();
+    t.compile_fail("tests/ui/bind_named_missing_named.rs");
+}

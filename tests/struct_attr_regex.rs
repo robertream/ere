@@ -74,6 +74,66 @@ fn unnamed_groups_not_required_in_named_struct() {
 }
 
 #[test]
+fn bind_strict_all_groups_bound() {
+    // bind = Strict requires all capture groups (named and unnamed) to have fields.
+    #[derive(PartialEq, Eq, Debug)]
+    #[regex(r"^(?<year>[21][0-9]{3})(-|-=)(?<month>0[1-9]|1[0-2])$", bind = Strict)]
+    struct StrictDate<'a> {
+        #[group(0)]
+        matched: &'a str,
+        year: &'a str,
+        #[group(2)]
+        sep: &'a str,
+        month: &'a str,
+    }
+
+    assert_eq!(
+        StrictDate::exec("2024-03"),
+        Some(StrictDate { matched: "2024-03", year: "2024", sep: "-", month: "03" })
+    );
+    assert_eq!(
+        StrictDate::exec("2024-=03"),
+        Some(StrictDate { matched: "2024-=03", year: "2024", sep: "-=", month: "03" })
+    );
+}
+
+#[test]
+fn bind_named_skips_unnamed() {
+    // bind = Named (explicit) — same as default, unnamed groups can be skipped.
+    #[derive(PartialEq, Eq, Debug)]
+    #[regex(r"^(?<first>.)\. (?<last>.+)$", bind = Named)]
+    struct Initial<'a> {
+        #[group(0)]
+        matched: &'a str,
+        first: &'a str,
+        last: &'a str,
+    }
+
+    assert_eq!(
+        Initial::exec("J. Simpson"),
+        Some(Initial { matched: "J. Simpson", first: "J", last: "Simpson" })
+    );
+}
+
+#[test]
+fn bind_none_skips_all_unbound() {
+    // bind = None — no groups are required. Even named groups can be left unbound.
+    #[derive(PartialEq, Eq, Debug)]
+    #[regex(r"^(?<year>[21][0-9]{3})(-|-=)(?<month>0[1-9]|1[0-2])(-|-=)(?<day>[0123][0-9])$", bind = None)]
+    struct YearOnly<'a> {
+        #[group(0)]
+        matched: &'a str,
+        year: &'a str,
+    }
+
+    assert_eq!(
+        YearOnly::exec("2024-03-29"),
+        Some(YearOnly { matched: "2024-03-29", year: "2024" })
+    );
+    assert_eq!(YearOnly::exec("not-a-date"), None);
+}
+
+#[test]
 fn phone_number_struct() {
     #[derive(PartialEq, Eq, Debug)]
     #[regex(r"^(\+1 )?[0-9]{3}-[0-9]{3}-[0-9]{4}$")]

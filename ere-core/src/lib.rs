@@ -260,9 +260,52 @@ pub fn __compile_regex_engine_fixed_offset(stream: TokenStream) -> TokenStream {
     .into();
 }
 
+/// Controls how strictly capture groups must be bound to struct fields.
 #[cfg(feature = "unstable-attr-regex")]
+#[derive(Clone, Copy)]
+enum GroupBind {
+    /// All capture groups (named and unnamed) must have a corresponding field.
+    Strict,
+    /// Only named capture groups must have a corresponding field.
+    Named,
+    /// No capture groups are required to have a corresponding field.
+    None,
+}
+
+#[cfg(feature = "unstable-attr-regex")]
+struct RegexAttr {
+    ere_litstr: syn::LitStr,
+    bind: GroupBind,
+}
+
+#[cfg(feature = "unstable-attr-regex")]
+impl syn::parse::Parse for RegexAttr {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let ere_litstr: syn::LitStr = input.parse()?;
+        let mut bind = GroupBind::Named;
+
+        if input.peek(syn::Token![,]) {
+            input.parse::<syn::Token![,]>()?;
+            let key: syn::Ident = input.parse()?;
+            if key != "bind" {
+                return Err(syn::Error::new_spanned(&key, format!("Unknown attribute `{key}`. Expected `bind`.")));
+            }
+            input.parse::<syn::Token![=]>()?;
+            let value: syn::Ident = input.parse()?;
+            bind = match value.to_string().as_str() {
+                "Strict" => GroupBind::Strict,
+                "Named" => GroupBind::Named,
+                "None" => GroupBind::None,
+                _ => return Err(syn::Error::new_spanned(&value, "Expected `Strict`, `Named`, or `None`.")),
+            };
+        }
+
+        Ok(RegexAttr { ere_litstr, bind })
+    }
+}
+
 pub fn __compile_regex_attr(attr: TokenStream, input: TokenStream) -> TokenStream {
-    let ere_litstr: syn::LitStr = syn::parse_macro_input!(attr);
+    let RegexAttr { ere_litstr, bind } = syn::parse_macro_input!(attr as RegexAttr);
     let ere_str = ere_litstr.value();
     let ere = match parse_tree::ERE::parse_str_syn(&ere_str, ere_litstr.span()) {
         Ok(ere) => ere,
@@ -393,22 +436,31 @@ pub fn __compile_regex_attr(attr: TokenStream, input: TokenStream) -> TokenStrea
                 field_args.push(arg);
             }
 
-            // Every named capture group must be bound to a field.
-            // Unnamed capture groups may be left unbound (silently ignored).
+            // Check for unbound capture groups based on the bind mode.
             for group_num in 0..capture_groups {
                 if used_groups.contains(&group_num) {
                     continue;
                 }
-                if let Some((name, _)) = name_to_group.iter().find(|(_, &g)| g == group_num) {
-                    return syn::parse::Error::new_spanned(
-                        &ere_litstr,
-                        format!("Named capture group `{name}` has no corresponding field in the struct."),
-                    )
-                    .to_compile_error()
-                    .into();
+                let is_named = name_to_group.iter().find(|(_, &g)| g == group_num);
+                match (bind, is_named) {
+                    (GroupBind::None, _) | (GroupBind::Named, Option::None) => {}
+                    (GroupBind::Named | GroupBind::Strict, Some((name, _))) => {
+                        return syn::parse::Error::new_spanned(
+                            &ere_litstr,
+                            format!("Named capture group `{name}` has no corresponding field in the struct."),
+                        )
+                        .to_compile_error()
+                        .into();
+                    }
+                    (GroupBind::Strict, Option::None) => {
+                        return syn::parse::Error::new_spanned(
+                            &ere_litstr,
+                            format!("Capture group {group_num} has no corresponding field in the struct. Add a field like `#[group({group_num})] captured: &'a str`."),
+                        )
+                        .to_compile_error()
+                        .into();
+                    }
                 }
-                // Unnamed capture groups without a corresponding #[group(N)] field
-                // are silently skipped — users are not forced to bind every group.
             }
 
             let args: proc_macro2::TokenStream = field_args.into_iter().collect();
