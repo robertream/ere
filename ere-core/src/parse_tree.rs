@@ -290,6 +290,7 @@ pub(crate) enum QuantifierType {
 
 impl QuantifierType {
     /// The minimum this quantifier matches, inclusive
+    #[allow(dead_code)]
     #[inline]
     const fn min(&self) -> u32 {
         return match self {
@@ -301,6 +302,7 @@ impl QuantifierType {
         };
     }
     /// The maximum this quantifier matches, inclusive. If `None`, it is unbounded
+    #[allow(dead_code)]
     #[inline]
     const fn max(&self) -> Option<u32> {
         return match self {
@@ -542,17 +544,7 @@ impl Atom {
             Atom::NonmatchingList(vec) => !vec.into_iter().any(|b| b.check(c)),
         };
     }
-    pub(crate) fn serialize_check(&self) -> TokenStream {
-        let ranges = self.to_ranges();
-        let mut stream = TokenStream::new();
-        for range in ranges {
-            let start = range.start();
-            let end = range.end();
-            stream.extend(quote! { (#start <= c && c <= #end) || });
-        }
-        return quote! {(#stream false)};
-    }
-    /// Produces the sorted, minimal set of ranges to represent the Atom.
+/// Produces the sorted, minimal set of ranges to represent the Atom.
     ///
     /// Example:
     /// ```

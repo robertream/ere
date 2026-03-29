@@ -258,11 +258,6 @@ impl SimplifiedTreeNode {
         let (root, groups) = SimplifiedTreeNode::from_sub_ere(value, 1, config);
         return (SimplifiedTreeNode::Capture(Box::new(root), 0), groups);
     }
-
-    /// [`SimplifiedTreeNode::from_ere`] except it doesn't wrap in the capture group 0
-    pub(crate) fn from_ere_no_group0(value: &ERE, config: &Config) -> (SimplifiedTreeNode, usize) {
-        return SimplifiedTreeNode::from_sub_ere(value, 1, config);
-    }
 }
 impl From<ERE> for SimplifiedTreeNode {
     fn from(value: ERE) -> Self {
