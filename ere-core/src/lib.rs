@@ -260,6 +260,24 @@ pub fn __compile_regex_engine_fixed_offset(stream: TokenStream) -> TokenStream {
     .into();
 }
 
+/// Which matching engine to use for the compiled regex.
+#[cfg(feature = "unstable-attr-regex")]
+#[derive(Clone, Copy)]
+enum Engine {
+    /// Automatically select the best engine (default).
+    Auto,
+    /// One-pass DFA over bytes. Single linear scan, no backtracking.
+    OnePassU8,
+    /// Deterministic finite automaton over bytes.
+    DfaU8,
+    /// NFA simulation over bytes via lockstep parallel execution.
+    FlatLockstepNfaU8,
+    /// NFA simulation over Unicode chars via lockstep parallel execution.
+    FlatLockstepNfa,
+    /// Extracts captures by fixed string offsets. Wraps the auto-selected base engine.
+    FixedOffset,
+}
+
 /// Controls how strictly capture groups must be bound to struct fields.
 #[cfg(feature = "unstable-attr-regex")]
 #[derive(Clone, Copy)]
@@ -276,6 +294,7 @@ enum GroupBind {
 struct RegexAttr {
     ere_litstr: syn::LitStr,
     bind: GroupBind,
+    engine: Engine,
 }
 
 #[cfg(feature = "unstable-attr-regex")]
@@ -283,29 +302,44 @@ impl syn::parse::Parse for RegexAttr {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         let ere_litstr: syn::LitStr = input.parse()?;
         let mut bind = GroupBind::Named;
+        let mut engine = Engine::Auto;
 
-        if input.peek(syn::Token![,]) {
+        while input.peek(syn::Token![,]) {
             input.parse::<syn::Token![,]>()?;
-            let key: syn::Ident = input.parse()?;
-            if key != "bind" {
-                return Err(syn::Error::new_spanned(&key, format!("Unknown attribute `{key}`. Expected `bind`.")));
+            if input.is_empty() {
+                break; // trailing comma
             }
+            let key: syn::Ident = input.parse()?;
             input.parse::<syn::Token![=]>()?;
             let value: syn::Ident = input.parse()?;
-            bind = match value.to_string().as_str() {
-                "Strict" => GroupBind::Strict,
-                "Named" => GroupBind::Named,
-                "None" => GroupBind::None,
-                _ => return Err(syn::Error::new_spanned(&value, "Expected `Strict`, `Named`, or `None`.")),
-            };
+            if key == "bind" {
+                bind = match value.to_string().as_str() {
+                    "Strict" => GroupBind::Strict,
+                    "Named" => GroupBind::Named,
+                    "None" => GroupBind::None,
+                    _ => return Err(syn::Error::new_spanned(&value, "Expected `Strict`, `Named`, or `None`.")),
+                };
+            } else if key == "engine" {
+                engine = match value.to_string().as_str() {
+                    "Auto" => Engine::Auto,
+                    "OnePassU8" => Engine::OnePassU8,
+                    "DfaU8" => Engine::DfaU8,
+                    "FlatLockstepNfaU8" => Engine::FlatLockstepNfaU8,
+                    "FlatLockstepNfa" => Engine::FlatLockstepNfa,
+                    "FixedOffset" => Engine::FixedOffset,
+                    _ => return Err(syn::Error::new_spanned(&value, "Expected `Auto`, `OnePassU8`, `DfaU8`, `FlatLockstepNfaU8`, `FlatLockstepNfa`, or `FixedOffset`.")),
+                };
+            } else {
+                return Err(syn::Error::new_spanned(&key, format!("Unknown attribute `{key}`. Expected `bind` or `engine`.")));
+            }
         }
 
-        Ok(RegexAttr { ere_litstr, bind })
+        Ok(RegexAttr { ere_litstr, bind, engine })
     }
 }
 
 pub fn __compile_regex_attr(attr: TokenStream, input: TokenStream) -> TokenStream {
-    let RegexAttr { ere_litstr, bind } = syn::parse_macro_input!(attr as RegexAttr);
+    let RegexAttr { ere_litstr, bind, engine } = syn::parse_macro_input!(attr as RegexAttr);
     let ere_str = ere_litstr.value();
     let ere = match parse_tree::ERE::parse_str_syn(&ere_str, ere_litstr.span()) {
         Ok(ere) => ere,
@@ -330,17 +364,60 @@ pub fn __compile_regex_attr(attr: TokenStream, input: TokenStream) -> TokenStrea
         .into();
     };
 
-    // Currently use a conservative check: only use u8 engines when it will only match ascii strings
-    fn is_state_ascii(state: &working_nfa::WorkingState) -> bool {
-        return state
-            .transitions
-            .iter()
-            .flat_map(|t| t.symbol.to_ranges())
-            .all(|range| range.end().is_ascii());
-    }
-    let _is_ascii = nfa.states.iter().all(is_state_ascii);
-
-    let (fn_pair, description) = pick_engine(ere.clone());
+    let (fn_pair, description) = match engine {
+        Engine::Auto => pick_engine(ere.clone()),
+        Engine::OnePassU8 => {
+            let u8_nfa = working_u8_nfa::U8NFA::new(&nfa);
+            let Some(fp) = one_pass_u8::serialize_one_pass_token_stream(&u8_nfa) else {
+                return syn::parse::Error::new_spanned(
+                    &ere_litstr,
+                    "Regex is not one-pass and could not be optimized to become one-pass. Try a different engine.",
+                )
+                .to_compile_error()
+                .into();
+            };
+            (fp, "Uses the `one_pass_u8` engine.".to_string())
+        }
+        Engine::DfaU8 => {
+            let u8_nfa = working_u8_nfa::U8NFA::new(&nfa);
+            let dfa_state_limit = working_u8_dfa::U8TDFA::default_bound(u8_nfa.states.len());
+            let Some(dfa) = working_u8_dfa::U8TDFA::from_nfa(&u8_nfa, dfa_state_limit) else {
+                return syn::parse::Error::new_spanned(
+                    &ere_litstr,
+                    format!("Failed to convert NFA into DFA: exceeded DFA state limit of {dfa_state_limit}. Try a different engine."),
+                )
+                .to_compile_error()
+                .into();
+            };
+            (dfa_u8::serialize_u8_dfa_token_stream(&dfa), "Uses the `dfa_u8` engine.".to_string())
+        }
+        Engine::FlatLockstepNfaU8 => {
+            let u8_nfa = working_u8_nfa::U8NFA::new(&nfa);
+            let fp = flat_lockstep_nfa_u8::serialize_flat_lockstep_nfa_u8_token_stream(&u8_nfa);
+            (fp, "Uses the `flat_lockstep_nfa_u8` engine.".to_string())
+        }
+        Engine::FlatLockstepNfa => {
+            let fp = flat_lockstep_nfa::serialize_flat_lockstep_nfa_token_stream(&nfa);
+            (fp, "Uses the `flat_lockstep_nfa` engine.".to_string())
+        }
+        Engine::FixedOffset => {
+            let (base_engine, _, _, u8_nfa, _) = pick_base_engine(ere.clone());
+            let Some(offsets) = fixed_offset::get_fixed_offsets(&u8_nfa) else {
+                return syn::parse::Error::new_spanned(
+                    &ere_litstr,
+                    "Regex capture groups are not at fixed offsets. Try a different engine.",
+                )
+                .to_compile_error()
+                .into();
+            };
+            let fp = fixed_offset::serialize_fixed_offset_token_stream(
+                base_engine,
+                offsets,
+                u8_nfa.num_capture_groups(),
+            );
+            (fp, "Uses the `fixed_offset` engine.".to_string())
+        }
+    };
     let struct_name = regex_struct.ident.clone();
     let ere_display_doc = format!("`{ere_str}`");
     let struct_name_link_doc = format!("[`{}`]", struct_name.to_string());

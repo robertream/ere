@@ -348,6 +348,57 @@ pub fn compile_regex_fixed_offset(stream: TokenStream) -> TokenStream {
 /// );
 /// ```
 ///
+/// The `engine` parameter selects which matching engine to use. By default, the best
+/// engine is chosen automatically. Available engines:
+///
+/// - `engine = Auto` — automatically select the best engine (default)
+/// - `engine = OnePassU8` — one-pass DFA over bytes; single linear scan, no backtracking.
+///   Fastest engine, but only works for
+///   [one-pass](https://swtch.com/~rsc/regexp/regexp3.html) regexes. Compile error if not applicable.
+/// - `engine = DfaU8` — deterministic finite automaton over bytes. Fast, but can fail
+///   for complex regexes that would produce too many states.
+/// - `engine = FlatLockstepNfaU8` — NFA simulation over bytes via lockstep parallel
+///   execution. Handles any ASCII regex.
+/// - `engine = FlatLockstepNfa` — NFA simulation over Unicode chars. Most general engine,
+///   handles non-ASCII patterns.
+/// - `engine = FixedOffset` — extracts captures by fixed string offsets instead of
+///   tracking them during matching. Only works when all capture groups are at deterministic
+///   positions. Compile error if not applicable.
+///
+/// ```
+/// use ere_macros::regex;
+///
+/// #[derive(Debug, PartialEq, Eq)]
+/// #[regex(r"^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$", engine = OnePassU8)]
+/// pub struct HexColor<'a>(&'a str, &'a str, &'a str, &'a str);
+///
+/// assert_eq!(
+///     HexColor::exec("#ff0080"),
+///     Some(HexColor("#ff0080", "ff", "00", "80")),
+/// );
+/// ```
+///
+/// The `engine` and `bind` parameters can be combined in any order:
+///
+/// ```
+/// use ere_macros::regex;
+///
+/// #[derive(Debug, PartialEq, Eq)]
+/// #[regex(r"^(?<r>[0-9a-f]{2})(?<g>[0-9a-f]{2})(?<b>[0-9a-f]{2})$", engine = DfaU8, bind = Named)]
+/// pub struct Color<'a> {
+///     #[group(0)]
+///     pub matched: &'a str,
+///     pub r: &'a str,
+///     pub g: &'a str,
+///     pub b: &'a str,
+/// }
+///
+/// assert_eq!(
+///     Color::exec("ff0080"),
+///     Some(Color { matched: "ff0080", r: "ff", g: "00", b: "80" }),
+/// );
+/// ```
+///
 /// ---
 ///
 /// Note that it is required to specify the fields with the proper type

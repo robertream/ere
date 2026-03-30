@@ -29,3 +29,9 @@ fn bind_named_missing_named() {
     let t = trybuild::TestCases::new();
     t.compile_fail("tests/ui/bind_named_missing_named.rs");
 }
+
+#[test]
+fn engine_one_pass_not_applicable() {
+    let t = trybuild::TestCases::new();
+    t.compile_fail("tests/ui/engine_one_pass_not_applicable.rs");
+}
