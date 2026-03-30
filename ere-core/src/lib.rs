@@ -338,6 +338,7 @@ impl syn::parse::Parse for RegexAttr {
     }
 }
 
+#[cfg(feature = "unstable-attr-regex")]
 pub fn __compile_regex_attr(attr: TokenStream, input: TokenStream) -> TokenStream {
     let RegexAttr { ere_litstr, bind, engine } = syn::parse_macro_input!(attr as RegexAttr);
     let ere_str = ere_litstr.value();
