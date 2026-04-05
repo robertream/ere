@@ -295,6 +295,7 @@ struct RegexAttr {
     ere_litstr: syn::LitStr,
     bind: GroupBind,
     engine: Engine,
+    ascii_case_insensitive: bool,
 }
 
 #[cfg(feature = "unstable-attr-regex")]
@@ -303,6 +304,7 @@ impl syn::parse::Parse for RegexAttr {
         let ere_litstr: syn::LitStr = input.parse()?;
         let mut bind = GroupBind::Named;
         let mut engine = Engine::Auto;
+        let mut ascii_case_insensitive = false;
 
         while input.peek(syn::Token![,]) {
             input.parse::<syn::Token![,]>()?;
@@ -310,6 +312,10 @@ impl syn::parse::Parse for RegexAttr {
                 break; // trailing comma
             }
             let key: syn::Ident = input.parse()?;
+            if key == "ascii_case_insensitive" {
+                ascii_case_insensitive = true;
+                continue;
+            }
             input.parse::<syn::Token![=]>()?;
             let value: syn::Ident = input.parse()?;
             if key == "bind" {
@@ -330,22 +336,26 @@ impl syn::parse::Parse for RegexAttr {
                     _ => return Err(syn::Error::new_spanned(&value, "Expected `Auto`, `OnePassU8`, `DfaU8`, `FlatLockstepNfaU8`, `FlatLockstepNfa`, or `FixedOffset`.")),
                 };
             } else {
-                return Err(syn::Error::new_spanned(&key, format!("Unknown attribute `{key}`. Expected `bind` or `engine`.")));
+                return Err(syn::Error::new_spanned(&key, format!("Unknown attribute `{key}`. Expected `bind`, `engine`, or `ascii_case_insensitive`.")));
             }
         }
 
-        Ok(RegexAttr { ere_litstr, bind, engine })
+        Ok(RegexAttr { ere_litstr, bind, engine, ascii_case_insensitive })
     }
 }
 
 #[cfg(feature = "unstable-attr-regex")]
 pub fn __compile_regex_attr(attr: TokenStream, input: TokenStream) -> TokenStream {
-    let RegexAttr { ere_litstr, bind, engine } = syn::parse_macro_input!(attr as RegexAttr);
+    let RegexAttr { ere_litstr, bind, engine, ascii_case_insensitive } = syn::parse_macro_input!(attr as RegexAttr);
     let ere_str = ere_litstr.value();
-    let ere = match parse_tree::ERE::parse_str_syn(&ere_str, ere_litstr.span()) {
+    let mut ere = match parse_tree::ERE::parse_str_syn(&ere_str, ere_litstr.span()) {
         Ok(ere) => ere,
         Err(compile_err) => return compile_err.into_compile_error().into(),
     };
+
+    if ascii_case_insensitive {
+        ere.apply_ascii_case_insensitive();
+    }
 
     let tree = simplified_tree::SimplifiedTreeNode::from(ere.clone());
     let nfa = working_nfa::WorkingNFA::new(&tree);
@@ -425,6 +435,14 @@ pub fn __compile_regex_attr(attr: TokenStream, input: TokenStream) -> TokenStrea
 
     let constructor = match &mut data_struct.fields {
         syn::Fields::Unnamed(fields) => {
+            if !matches!(bind, GroupBind::Named) {
+                return syn::parse::Error::new_spanned(
+                    &ere_litstr,
+                    "The `bind` parameter is only supported on named structs, not tuple structs.",
+                )
+                .to_compile_error()
+                .into();
+            }
             if fields.unnamed.len() != optional_captures.len() {
                 return syn::parse::Error::new_spanned(
                     &fields.unnamed,
@@ -467,10 +485,23 @@ pub fn __compile_regex_attr(attr: TokenStream, input: TokenStream) -> TokenStrea
                 let ident = field.ident.as_ref().unwrap();
 
                 // Parse #[group(N)] attribute if present, then strip it
-                let explicit_group: Option<usize> = field.attrs.iter()
-                    .find(|a| a.path().is_ident("group"))
-                    .and_then(|a| a.parse_args::<syn::LitInt>().ok())
-                    .and_then(|lit| lit.base10_parse().ok());
+                let group_attr = field.attrs.iter().find(|a| a.path().is_ident("group"));
+                let explicit_group: Option<usize> = match group_attr {
+                    Some(attr) => {
+                        let lit: syn::LitInt = match attr.parse_args() {
+                            Ok(lit) => lit,
+                            Err(_) => return syn::parse::Error::new_spanned(
+                                attr, "#[group(N)] requires a non-negative integer.",
+                            ).to_compile_error().into(),
+                        };
+                        match lit.base10_parse() {
+                            Ok(n) => Some(n),
+                            Err(e) => return syn::parse::Error::new_spanned(&lit, e)
+                                .to_compile_error().into(),
+                        }
+                    }
+                    None => None,
+                };
                 field.attrs.retain(|a| !a.path().is_ident("group"));
 
                 let group_num = if let Some(n) = explicit_group {
@@ -479,6 +510,12 @@ pub fn __compile_regex_attr(attr: TokenStream, input: TokenStream) -> TokenStrea
                     let name = ident.to_string();
                     match name_to_group.get(&name) {
                         Some(&n) => n,
+                        None if matches!(bind, GroupBind::None) => {
+                            // Field has no matching capture group — assign None.
+                            // The compiler will enforce the field type is Option<T>.
+                            field_args.push(quote! { #ident: None, });
+                            continue;
+                        }
                         None => {
                             return syn::parse::Error::new_spanned(
                                 ident,
