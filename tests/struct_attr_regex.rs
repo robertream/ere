@@ -210,3 +210,22 @@ fn unbound_field_with_bind_none() {
         Some(Partial { matched: "2024", year: "2024", month: None, day: None })
     );
 }
+
+#[test]
+fn bind_none_option_field_for_bound_capture() {
+    // With bind=None, a bound capture group can use Option<&str> even if the
+    // capture is non-optional. The field receives Some(...) at runtime.
+    #[derive(PartialEq, Eq, Debug)]
+    #[regex(r"^(?<year>[12][0-9]{3})", bind = None)]
+    struct Flexible<'a> {
+        #[group(0)]
+        matched: &'a str,
+        year: Option<&'a str>,
+    }
+
+    assert_eq!(
+        Flexible::exec("2024"),
+        Some(Flexible { matched: "2024", year: Some("2024") })
+    );
+    assert_eq!(Flexible::exec("abc"), None);
+}

@@ -463,7 +463,7 @@ pub fn __compile_regex_attr(attr: TokenStream, input: TokenStream) -> TokenStrea
                     quote! {
                         result[#group_num]
                         .expect(
-                            "If you are seeing this, there is probably an internal bug in the `ere-core` crate where a capture group was mistakenly marked as non-optional. Please report the bug."
+                            "ere bug: non-optional capture was None — please report this"
                         ),
                     }
                 })
@@ -542,10 +542,18 @@ pub fn __compile_regex_attr(attr: TokenStream, input: TokenStream) -> TokenStrea
                 let opt = optional_captures[group_num];
                 let arg = if opt {
                     quote! { #ident: result[#group_num], }
+                } else if matches!(bind, GroupBind::None) {
+                    // In bind=None mode, use .into() so the field can be either
+                    // &str or Option<&str> (via From<T> for Option<T>).
+                    quote! {
+                        #ident: result[#group_num]
+                            .expect("ere bug: non-optional capture was None — please report this")
+                            .into(),
+                    }
                 } else {
                     quote! {
                         #ident: result[#group_num]
-                            .expect("If you are seeing this, there is probably an internal bug in the `ere-core` crate where a capture group was mistakenly marked as non-optional. Please report the bug."),
+                            .expect("ere bug: non-optional capture was None — please report this"),
                     }
                 };
                 field_args.push(arg);
