@@ -117,6 +117,21 @@ impl ERE {
         }
     }
 
+    /// Transforms the parse tree so ASCII letters match both cases.
+    #[cfg(feature = "unstable-attr-regex")]
+    pub(crate) fn apply_ascii_case_insensitive(&mut self) {
+        for branch in &mut self.0 {
+            for part in &mut branch.0 {
+                match part {
+                    EREPart::Single(expr) | EREPart::Quantified(expr, _) => {
+                        expr.apply_ascii_case_insensitive();
+                    }
+                    EREPart::Start | EREPart::End => {}
+                }
+            }
+        }
+    }
+
     pub(crate) fn parse_str_syn(string: &str, span: proc_macro2::Span) -> syn::Result<Self> {
         return ERE::parse_str(&string).map_err(|err| {
             syn::Error::new(
@@ -272,6 +287,17 @@ impl EREExpression {
             }
             EREExpression::NonCapturingSubexpression(inner) => {
                 inner.collect_group_names(names);
+            }
+        }
+    }
+    #[cfg(feature = "unstable-attr-regex")]
+    fn apply_ascii_case_insensitive(&mut self) {
+        match self {
+            EREExpression::Atom(atom) => atom.apply_ascii_case_insensitive(),
+            EREExpression::Subexpression(inner)
+            | EREExpression::NonCapturingSubexpression(inner)
+            | EREExpression::NamedSubexpression(inner, _) => {
+                inner.apply_ascii_case_insensitive();
             }
         }
     }
@@ -446,6 +472,70 @@ pub enum Atom {
     /// A nonmatching bracket expression
     NonmatchingList(Vec<BracketExpressionTerm>),
 }
+impl Atom {
+    /// Transforms this atom so ASCII letters match both cases.
+    /// - `NormalChar('a')` becomes `MatchingList([Single('a'), Single('A')])`
+    /// - Bracket expressions get expanded: `Single('a')` adds `Single('A')`,
+    ///   `Range('a','f')` adds `Range('A','F')`.
+    /// - `CharClass` variants like `[:alpha:]` already match both cases.
+    /// - `NonmatchingList` terms are expanded the same way (excluding both cases).
+    #[cfg(feature = "unstable-attr-regex")]
+    fn apply_ascii_case_insensitive(&mut self) {
+        match self {
+            Atom::NormalChar(c) if c.is_ascii_alphabetic() => {
+                let lower = c.to_ascii_lowercase();
+                let upper = c.to_ascii_uppercase();
+                *self = Atom::MatchingList(vec![
+                    BracketExpressionTerm::Single(lower),
+                    BracketExpressionTerm::Single(upper),
+                ]);
+            }
+            Atom::MatchingList(terms) | Atom::NonmatchingList(terms) => {
+                let mut extra = Vec::new();
+                for term in terms.iter() {
+                    match term {
+                        BracketExpressionTerm::Single(c) if c.is_ascii_alphabetic() => {
+                            let folded = if c.is_ascii_lowercase() {
+                                c.to_ascii_uppercase()
+                            } else {
+                                c.to_ascii_lowercase()
+                            };
+                            extra.push(BracketExpressionTerm::Single(folded));
+                        }
+                        BracketExpressionTerm::Range(a, b) => {
+                            // Clamp the range to each ASCII letter sub-range and fold.
+                            // e.g. [0-f] overlaps a-f (lowercase), so we add A-F.
+                            let lo = *a as u8;
+                            let hi = *b as u8;
+                            // Check overlap with lowercase a-z
+                            if lo <= b'z' && hi >= b'a' {
+                                let clamped_lo = lo.max(b'a');
+                                let clamped_hi = hi.min(b'z');
+                                let folded_lo = (clamped_lo as char).to_ascii_uppercase();
+                                let folded_hi = (clamped_hi as char).to_ascii_uppercase();
+                                extra.push(BracketExpressionTerm::Range(folded_lo, folded_hi));
+                            }
+                            // Check overlap with uppercase A-Z
+                            if lo <= b'Z' && hi >= b'A' {
+                                let clamped_lo = lo.max(b'A');
+                                let clamped_hi = hi.min(b'Z');
+                                let folded_lo = (clamped_lo as char).to_ascii_lowercase();
+                                let folded_hi = (clamped_hi as char).to_ascii_lowercase();
+                                extra.push(BracketExpressionTerm::Range(folded_lo, folded_hi));
+                            }
+                        }
+                        // NOTE: POSIX character classes like [:lower:] and [:upper:] are
+                        // not affected by ascii_case_insensitive.
+                        _ => {}
+                    }
+                }
+                terms.extend(extra);
+            }
+            _ => {}
+        }
+    }
+}
+
 impl From<char> for Atom {
     fn from(value: char) -> Self {
         return Atom::NormalChar(value);
